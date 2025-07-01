@@ -6,10 +6,32 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from mcp_use import MCPClient, MCPAgent
 from mcp_use.adapters.langchain_adapter import LangChainAdapter
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.chat_history import BaseChatMessageHistory
 
 os.environ["GOOGLE_API_KEY"] = "AIzaSyBZP6QUlAIFnC8krn6ToNyQ7ocILJlMPzI"
 
 os.environ["MCP_USE_ANONYMIZED_TELEMETRY"] = "false"
+
+store = {}
+
+
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    """
+    Retrieve the chat message history for a given session.
+
+    If the session does not exist in the store, a new ChatMessageHistory is created and stored.
+
+    Args:
+        session_id (str): The unique identifier for the chat session.
+
+    Returns:
+        BaseChatMessageHistory: The message history associated with the session.
+    """
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+    return store[session_id]
 
 
 async def main():
@@ -44,32 +66,33 @@ async def main():
         ]
     )
     agent = create_tool_calling_agent(llm=llm, tools=tools, prompt=prompt)
-    agent_executor = AgentExecutor(agent=agent, tools=tools)
-
-    previous_ai_message = ""
-    previous_user_message = ""
+    agent_executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=True,
+        max_iterations=3,
+        return_intermediate_steps=True,
+    )
+    agent_with_chat_history = RunnableWithMessageHistory(
+        agent_executor,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="chat_history",
+    )
 
     try:
         while True:
             message = input("User message: ")
-            previous_user_message = message
 
             if message.lower() == "exit":
                 print("Exiting the client application.")
                 break
 
-            result = await agent_executor.ainvoke(
-                {
-                    "input": message,
-                    "chat_history": [
-                        HumanMessage(content=previous_user_message),
-                        AIMessage(content=previous_ai_message),
-                    ],
-                }
+            result = await agent_with_chat_history.ainvoke(
+                {"input": message},
+                config={"configurable": {"session_id": "<foo>"}},
             )
-
-            print("AI Response:", result["output"])
-            previous_ai_message = result["output"]
+            print(f"\n🤖 Agent response: {result['output']}")
 
     except KeyboardInterrupt:
         print("Client application interrupted by user.")
@@ -85,42 +108,3 @@ if __name__ == "__main__":
 
     asyncio.run(main())
     print("Client application has started.")
-
-
-async def execute_query(agent, query: str) -> str:
-    """
-    Function to query the agent with a given input text.
-
-    Args:
-        input_text (str): The input text to query the agent.
-
-    Returns:
-        str: The response from the agent.
-    """
-    print("🤖 Starting agent task...")
-    print("-" * 50)
-
-    current_step = 1
-
-    async for event in agent.astream_events(query, version="v1"):
-        event_type = event.get("event")
-        data = event.get("data", {})
-
-        if event_type == "on_chat_model_start":
-            print(f"\n📝 Step {current_step}: Planning next action...")
-
-        elif event_type == "on_tool_start":
-            tool_name = data.get("input", {}).get("tool_name", "unknown")
-            print(f"\n🔧 Using tool: {tool_name}")
-
-        elif event_type == "on_tool_end":
-            print(" ✅ Tool completed")
-            current_step += 1
-
-        elif event_type == "on_chat_model_stream":
-            token = data.get("chunk", {}).get("content", "")
-            if token:
-                print(token, end="", flush=True)
-
-        elif event_type == "on_chain_end":
-            print("\n\n🎉 Task completed successfully!")
