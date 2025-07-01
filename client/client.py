@@ -9,6 +9,7 @@ from mcp_use.adapters.langchain_adapter import LangChainAdapter
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
+import pprint
 
 os.environ["GOOGLE_API_KEY"] = "AIzaSyBZP6QUlAIFnC8krn6ToNyQ7ocILJlMPzI"
 
@@ -69,9 +70,9 @@ async def main():
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools,
-        verbose=True,
+        # verbose=True,
         max_iterations=3,
-        return_intermediate_steps=True,
+        # return_intermediate_steps=True,
     )
     agent_with_chat_history = RunnableWithMessageHistory(
         agent_executor,
@@ -88,11 +89,34 @@ async def main():
                 print("Exiting the client application.")
                 break
 
-            result = await agent_with_chat_history.ainvoke(
+            async for chunk in agent_with_chat_history.astream(
                 {"input": message},
                 config={"configurable": {"session_id": "<foo>"}},
-            )
-            print(f"\n🤖 Agent response: {result['output']}")
+            ):
+                # Agent Action
+                if "actions" in chunk:
+                    for action in chunk["actions"]:
+                        print(
+                            f"Calling Tool: `{action.tool}` with input `{action.tool_input}`"
+                        )
+                # Observation
+                elif "steps" in chunk:
+                    for step in chunk["steps"]:
+                        print(f"Tool Result: `{step.observation}`")
+
+                # Final result
+                elif "output" in chunk:
+                    print(f"Final Output: {chunk['output']}")
+
+                else:
+                    raise ValueError()
+                print("---")
+
+            # result = await agent_with_chat_history.ainvoke(
+            #    {"input": message},
+            #    config={"configurable": {"session_id": "<foo>"}},
+            # )
+            # print(f"\n🤖 Agent response: {result['output']}")
 
     except KeyboardInterrupt:
         print("Client application interrupted by user.")
